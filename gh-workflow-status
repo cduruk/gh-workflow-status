@@ -1,0 +1,457 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+DEFAULT_REPO="${GH_WORKFLOW_STATUS_REPO:-}"
+DEFAULT_WORKFLOW="${GH_WORKFLOW_STATUS_WORKFLOW:-}"
+DEFAULT_LIMIT="${GH_WORKFLOW_STATUS_LIMIT:-5}"
+DEFAULT_JOB_LIMIT="${GH_WORKFLOW_STATUS_JOB_LIMIT:-25}"
+
+REPO="$DEFAULT_REPO"
+WORKFLOW="$DEFAULT_WORKFLOW"
+LIMIT="$DEFAULT_LIMIT"
+JOB_LIMIT="$DEFAULT_JOB_LIMIT"
+SHOW_JOBS="auto"
+ALL_JOBS=0
+WATCH_SECONDS=""
+RUN_ID=""
+BRANCH=""
+EVENT=""
+STATUS=""
+COLOR_MODE="auto"
+
+usage() {
+  cat <<'USAGE'
+View the status of a GitHub Actions workflow.
+
+Usage:
+  gh workflow-status <workflow>
+  gh workflow-status [OWNER/REPO] <workflow>
+  gh workflow-status <workflow-url>
+
+Defaults:
+  OWNER/REPO: current repository detected by gh
+
+Options:
+  -R, --repo OWNER/REPO       Repository to inspect
+  -w, --workflow WORKFLOW     Workflow file name or workflow name
+  -L, --limit N               Number of recent runs to show
+      --run ID                Show a specific run
+      --branch BRANCH         Filter runs by branch
+      --event EVENT           Filter runs by event
+      --status STATUS         Filter runs by status or conclusion
+      --jobs                  Show job detail for the selected run
+      --all-jobs              Include successful and skipped jobs in job detail
+      --no-jobs               Only show the run list
+      --jobs-limit N          Max job rows to print
+      --watch SECONDS         Refresh until interrupted
+      --color auto|always|never
+  -h, --help                  Show this help
+
+Examples:
+  gh workflow-status deploy.yml
+  gh workflow-status --watch 15 deploy.yml
+  gh workflow-status --jobs deploy.yml
+  gh workflow-status cli/cli build.yml
+  gh workflow-status https://github.com/cli/cli/actions/workflows/build.yml
+USAGE
+}
+
+die() {
+  echo "Error: $*" >&2
+  exit 1
+}
+
+parse_workflow_url() {
+  local value="$1"
+  if [[ "$value" =~ ^https://github\.com/([^/]+)/([^/]+)/actions/workflows/([^/?#]+) ]]; then
+    REPO="${BASH_REMATCH[1]}/${BASH_REMATCH[2]}"
+    WORKFLOW="${BASH_REMATCH[3]}"
+    return 0
+  fi
+  return 1
+}
+
+is_positive_int() {
+  [[ "$1" =~ ^[1-9][0-9]*$ ]]
+}
+
+looks_like_repo() {
+  [[ "$1" =~ ^[^/[:space:]]+/[^/[:space:]]+$ && "$1" != *.yml && "$1" != *.yaml ]]
+}
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    -R|--repo)
+      [[ $# -ge 2 ]] || die "$1 requires OWNER/REPO"
+      REPO="$2"
+      shift 2
+      ;;
+    --repo=*)
+      REPO="${1#*=}"
+      shift
+      ;;
+    -w|--workflow)
+      [[ $# -ge 2 ]] || die "$1 requires a workflow file or name"
+      WORKFLOW="$2"
+      shift 2
+      ;;
+    --workflow=*)
+      WORKFLOW="${1#*=}"
+      shift
+      ;;
+    -L|--limit)
+      [[ $# -ge 2 ]] || die "$1 requires a number"
+      LIMIT="$2"
+      shift 2
+      ;;
+    --limit=*)
+      LIMIT="${1#*=}"
+      shift
+      ;;
+    --run)
+      [[ $# -ge 2 ]] || die "$1 requires a run ID"
+      RUN_ID="$2"
+      SHOW_JOBS="always"
+      shift 2
+      ;;
+    --run=*)
+      RUN_ID="${1#*=}"
+      SHOW_JOBS="always"
+      shift
+      ;;
+    --branch)
+      [[ $# -ge 2 ]] || die "$1 requires a branch"
+      BRANCH="$2"
+      shift 2
+      ;;
+    --branch=*)
+      BRANCH="${1#*=}"
+      shift
+      ;;
+    --event)
+      [[ $# -ge 2 ]] || die "$1 requires an event"
+      EVENT="$2"
+      shift 2
+      ;;
+    --event=*)
+      EVENT="${1#*=}"
+      shift
+      ;;
+    --status)
+      [[ $# -ge 2 ]] || die "$1 requires a status"
+      STATUS="$2"
+      shift 2
+      ;;
+    --status=*)
+      STATUS="${1#*=}"
+      shift
+      ;;
+    --jobs)
+      SHOW_JOBS="always"
+      shift
+      ;;
+    --all-jobs)
+      SHOW_JOBS="always"
+      ALL_JOBS=1
+      shift
+      ;;
+    --no-jobs)
+      SHOW_JOBS="never"
+      shift
+      ;;
+    --jobs-limit)
+      [[ $# -ge 2 ]] || die "$1 requires a number"
+      JOB_LIMIT="$2"
+      shift 2
+      ;;
+    --jobs-limit=*)
+      JOB_LIMIT="${1#*=}"
+      shift
+      ;;
+    --watch)
+      [[ $# -ge 2 ]] || die "$1 requires seconds"
+      WATCH_SECONDS="$2"
+      shift 2
+      ;;
+    --watch=*)
+      WATCH_SECONDS="${1#*=}"
+      shift
+      ;;
+    --color)
+      [[ $# -ge 2 ]] || die "$1 requires auto, always, or never"
+      COLOR_MODE="$2"
+      shift 2
+      ;;
+    --color=*)
+      COLOR_MODE="${1#*=}"
+      shift
+      ;;
+    -h|--help)
+      usage
+      exit 0
+      ;;
+    --)
+      shift
+      while [[ $# -gt 0 ]]; do
+        if parse_workflow_url "$1"; then
+          shift
+        elif looks_like_repo "$1"; then
+          REPO="$1"
+          shift
+        else
+          WORKFLOW="$1"
+          shift
+        fi
+      done
+      ;;
+    -*)
+      die "unknown option: $1"
+      ;;
+    *)
+      if parse_workflow_url "$1"; then
+        shift
+      elif looks_like_repo "$1"; then
+        REPO="$1"
+        shift
+      else
+        WORKFLOW="$1"
+        shift
+      fi
+      ;;
+  esac
+done
+
+command -v gh >/dev/null 2>&1 || die "gh is required"
+command -v jq >/dev/null 2>&1 || die "jq is required"
+
+if [[ -z "$WORKFLOW" && -z "$RUN_ID" ]]; then
+  die "workflow is required. Usage: gh workflow-status <workflow>"
+fi
+if [[ -z "$REPO" ]]; then
+  REPO="$(gh repo view --json nameWithOwner -q .nameWithOwner 2>/dev/null)" || {
+    die "could not detect a repository. Run from a gh repository context or pass --repo OWNER/REPO."
+  }
+fi
+[[ "$REPO" == */* ]] || die "repo must look like OWNER/REPO"
+is_positive_int "$LIMIT" || die "--limit must be a positive integer"
+is_positive_int "$JOB_LIMIT" || die "--jobs-limit must be a positive integer"
+if [[ -n "$WATCH_SECONDS" ]]; then
+  is_positive_int "$WATCH_SECONDS" || die "--watch must be a positive integer"
+fi
+case "$COLOR_MODE" in
+  auto|always|never) ;;
+  *) die "--color must be auto, always, or never" ;;
+esac
+
+use_color() {
+  case "$COLOR_MODE" in
+    always) return 0 ;;
+    never) return 1 ;;
+    auto) [[ -t 1 && -z "${NO_COLOR:-}" ]] ;;
+  esac
+}
+
+fetch_runs() {
+  local args=(
+    run list
+    --repo "$REPO"
+    --workflow "$WORKFLOW"
+    --limit "$LIMIT"
+    --json databaseId,displayTitle,status,conclusion,headBranch,headSha,number,event,createdAt,updatedAt,url,workflowName,startedAt
+  )
+  [[ -n "$BRANCH" ]] && args+=(--branch "$BRANCH")
+  [[ -n "$EVENT" ]] && args+=(--event "$EVENT")
+  [[ -n "$STATUS" ]] && args+=(--status "$STATUS")
+  gh "${args[@]}"
+}
+
+fetch_run() {
+  gh run view "$RUN_ID" \
+    --repo "$REPO" \
+    --json databaseId,displayTitle,status,conclusion,headBranch,headSha,number,event,createdAt,updatedAt,url,workflowName,startedAt \
+    --jq '[.]'
+}
+
+fetch_jobs() {
+  local id="$1"
+  gh run view "$id" \
+    --repo "$REPO" \
+    --json jobs \
+    --jq '[.jobs[] | {databaseId, name, status, conclusion, startedAt, completedAt, url}]'
+}
+
+format_runs() {
+  local color="$1"
+  jq -r --arg color "$color" '
+    def esc($code): "\u001b[" + $code + "m";
+    def colorize($text):
+      if $color != "1" then $text
+      elif ($text == "SUCCESS") then esc("32") + $text + esc("0")
+      elif ($text == "FAILURE" or $text == "TIMED_OUT" or $text == "STARTUP_FAILURE") then esc("31") + $text + esc("0")
+      elif ($text == "CANCELLED" or $text == "STALE") then esc("90") + $text + esc("0")
+      elif ($text == "IN_PROGRESS") then esc("34") + $text + esc("0")
+      elif ($text == "QUEUED" or $text == "PENDING" or $text == "WAITING" or $text == "REQUESTED" or $text == "ACTION_REQUIRED") then esc("33") + $text + esc("0")
+      else $text
+      end;
+    def epoch($t): if ($t == null or $t == "" or ($t | startswith("0001-01-01"))) then null else ($t | fromdateiso8601) end;
+    def span($seconds):
+      if $seconds == null then "unknown"
+      else
+        ($seconds | floor) as $s |
+        if $s < 60 then "\($s)s"
+        elif $s < 3600 then "\(($s / 60) | floor)m"
+        elif $s < 86400 then "\((($s / 3600) * 10 | round) / 10)h"
+        else "\((($s / 86400) * 10 | round) / 10)d"
+        end
+      end;
+    def ago($t):
+      epoch($t) as $e |
+      if $e == null then "unknown" else "\(span(now - $e)) ago" end;
+    def elapsed($start; $finish):
+      epoch($start) as $s |
+      epoch($finish) as $e |
+      if $s == null then "unknown" else span(($e // now) - $s) end;
+    def state:
+      if .status == "completed" then
+        ((.conclusion // "") | if . == "" then "completed" else . end)
+      else
+        .status
+      end;
+    def state_label: state | ascii_upcase;
+    if length == 0 then
+      "No runs found."
+    else
+      to_entries[] |
+      .value as $run |
+      ($run | state_label) as $state_text |
+      ($run.headSha // "" | .[0:7]) as $sha |
+      ($run.status != "completed") as $active |
+      ((if $active then "running " + elapsed(($run.startedAt // $run.createdAt); null)
+        else "duration " + elapsed(($run.startedAt // $run.createdAt); $run.updatedAt)
+        end)) as $duration |
+      "\(.key + 1). #\($run.number) [\(colorize($state_text))] \($run.displayTitle)\n" +
+      "   \($run.headBranch // "-") \($sha) - \($run.event // "-") - created \(ago($run.createdAt)) - \($duration)\n" +
+      "   run \($run.databaseId) - \($run.url)"
+    end
+  '
+}
+
+format_jobs() {
+  local color="$1"
+  local all_jobs="$2"
+  local limit="$3"
+  jq -r --arg color "$color" --argjson all "$all_jobs" --argjson limit "$limit" '
+    def esc($code): "\u001b[" + $code + "m";
+    def effective:
+      if .status == "completed" then
+        ((.conclusion // "") | if . == "" then "completed" else . end)
+      else
+        .status
+      end;
+    def state_label: effective | ascii_upcase;
+    def colorize($text):
+      if $color != "1" then $text
+      elif ($text == "SUCCESS") then esc("32") + $text + esc("0")
+      elif ($text == "FAILURE" or $text == "TIMED_OUT" or $text == "STARTUP_FAILURE") then esc("31") + $text + esc("0")
+      elif ($text == "CANCELLED" or $text == "STALE") then esc("90") + $text + esc("0")
+      elif ($text == "IN_PROGRESS") then esc("34") + $text + esc("0")
+      elif ($text == "QUEUED" or $text == "PENDING" or $text == "WAITING" or $text == "REQUESTED" or $text == "ACTION_REQUIRED") then esc("33") + $text + esc("0")
+      else $text
+      end;
+    def epoch($t): if ($t == null or $t == "" or ($t | startswith("0001-01-01"))) then null else ($t | fromdateiso8601) end;
+    def span($seconds):
+      if $seconds == null then "unknown"
+      else
+        ($seconds | floor) as $s |
+        if $s < 60 then "\($s)s"
+        elif $s < 3600 then "\(($s / 60) | floor)m"
+        elif $s < 86400 then "\((($s / 3600) * 10 | round) / 10)h"
+        else "\((($s / 86400) * 10 | round) / 10)d"
+        end
+      end;
+    def elapsed:
+      epoch(.startedAt) as $s |
+      epoch(.completedAt) as $e |
+      if $s == null then "not started" else span(($e // now) - $s) end;
+    . as $jobs |
+    def count($state): [$jobs[] | select(effective == $state)] | length;
+    def fail_count: count("failure") + count("timed_out") + count("startup_failure");
+    "Jobs: \(count("success")) success, \(count("in_progress")) in_progress, \((count("queued") + count("pending") + count("waiting") + count("requested"))) queued, \(fail_count) failed, \(count("cancelled")) cancelled, \(count("skipped")) skipped" as $summary |
+    (if $all == 1 then $jobs else [$jobs[] | select((effective != "success") and (effective != "skipped"))] end) as $interesting |
+    if ($interesting | length) == 0 then
+      $summary + "\nNo active or failing jobs."
+    else
+      ($summary + "\n" +
+      ($interesting[:$limit] |
+        map("  [\(colorize(state_label))] \(.name) - \(elapsed)\n    \(.url)")
+        | join("\n")) +
+      (if ($interesting | length) > $limit then "\n  ... \(($interesting | length) - $limit) more jobs hidden; use --all-jobs or --jobs-limit N" else "" end))
+    end
+  '
+}
+
+selected_run_id() {
+  jq -r '
+    ([.[] | select(.status != "completed")][0].databaseId // .[0].databaseId // "") | tostring
+  '
+}
+
+selected_run_is_active() {
+  local id="$1"
+  jq -e --arg id "$id" '
+    .[] | select((.databaseId | tostring) == $id) | .status != "completed"
+  ' >/dev/null
+}
+
+render_once() {
+  local color=0
+  if use_color; then
+    color=1
+  fi
+
+  local runs_json
+  if [[ -n "$RUN_ID" ]]; then
+    runs_json="$(fetch_run)"
+  else
+    runs_json="$(fetch_runs)"
+  fi
+
+  local target="$WORKFLOW"
+  [[ -n "$target" ]] || target="run $RUN_ID"
+  printf '%s\n' "$REPO / $target"
+  printf 'Updated %s\n\n' "$(date -u '+%Y-%m-%d %H:%M:%S UTC')"
+  printf '%s\n' "$runs_json" | format_runs "$color"
+
+  if [[ "$SHOW_JOBS" == "never" ]]; then
+    return
+  fi
+
+  local job_run_id
+  if [[ -n "$RUN_ID" ]]; then
+    job_run_id="$RUN_ID"
+  else
+    job_run_id="$(printf '%s\n' "$runs_json" | selected_run_id)"
+  fi
+  [[ -n "$job_run_id" ]] || return
+
+  if [[ "$SHOW_JOBS" == "auto" ]] && ! printf '%s\n' "$runs_json" | selected_run_is_active "$job_run_id"; then
+    return
+  fi
+
+  local jobs_json
+  jobs_json="$(fetch_jobs "$job_run_id")"
+  printf '\nRun %s job detail:\n' "$job_run_id"
+  printf '%s\n' "$jobs_json" | format_jobs "$color" "$ALL_JOBS" "$JOB_LIMIT"
+}
+
+if [[ -n "$WATCH_SECONDS" ]]; then
+  while true; do
+    if [[ -t 1 ]]; then
+      printf '\033[H\033[2J'
+    fi
+    render_once
+    sleep "$WATCH_SECONDS"
+  done
+else
+  render_once
+fi
