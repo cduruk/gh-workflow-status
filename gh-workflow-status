@@ -3,14 +3,14 @@ set -euo pipefail
 
 DEFAULT_REPO="${GH_WORKFLOW_STATUS_REPO:-}"
 DEFAULT_WORKFLOW="${GH_WORKFLOW_STATUS_WORKFLOW:-}"
-DEFAULT_LIMIT="${GH_WORKFLOW_STATUS_LIMIT:-5}"
+DEFAULT_LIMIT="${GH_WORKFLOW_STATUS_LIMIT:-10}"
 DEFAULT_JOB_LIMIT="${GH_WORKFLOW_STATUS_JOB_LIMIT:-25}"
 
 REPO="$DEFAULT_REPO"
 WORKFLOW="$DEFAULT_WORKFLOW"
 LIMIT="$DEFAULT_LIMIT"
 JOB_LIMIT="$DEFAULT_JOB_LIMIT"
-SHOW_JOBS="auto"
+SHOW_JOBS="never"
 ALL_JOBS=0
 WATCH_SECONDS=""
 RUN_ID=""
@@ -34,7 +34,7 @@ Defaults:
 Options:
   -R, --repo OWNER/REPO       Repository to inspect
   -w, --workflow WORKFLOW     Workflow file name or workflow name
-  -L, --limit N               Number of recent runs to show
+  -L, --limit N               Number of recent runs to show (default: 10)
       --run ID                Show a specific run
       --branch BRANCH         Filter runs by branch
       --event EVENT           Filter runs by event

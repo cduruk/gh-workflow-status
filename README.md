@@ -26,13 +26,13 @@ gh extension install cduruk/gh-workflow-status
 ## Usage
 
 ```sh
-# Show a workflow from the current repository
+# Show 10 recent runs by default
 gh workflow-status deploy.yml
 
 # Refresh every 15 seconds
 gh workflow-status --watch 15 deploy.yml
 
-# Show job detail for the selected run
+# Show job detail for the selected run when needed
 gh workflow-status --jobs deploy.yml
 
 # Show a specific workflow by repo and file/name
@@ -45,7 +45,7 @@ gh workflow-status https://github.com/cli/cli/actions/workflows/build.yml
 Useful options:
 
 ```sh
-gh workflow-status deploy.yml --limit 10
+gh workflow-status deploy.yml --limit 20
 gh workflow-status deploy.yml --branch main
 gh workflow-status deploy.yml --status in_progress
 gh workflow-status --run 24856112866
@@ -57,7 +57,7 @@ Defaults can be changed with environment variables:
 ```sh
 export GH_WORKFLOW_STATUS_REPO=OWNER/REPO
 export GH_WORKFLOW_STATUS_WORKFLOW=deploy.yml
-export GH_WORKFLOW_STATUS_LIMIT=5
+export GH_WORKFLOW_STATUS_LIMIT=10
 export GH_WORKFLOW_STATUS_JOB_LIMIT=25
 ```
 
