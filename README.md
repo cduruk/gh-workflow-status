@@ -20,7 +20,7 @@ gh extension install .
 If this is later published as a repository named `gh-workflow-status`:
 
 ```sh
-gh extension install OWNER/gh-workflow-status
+gh extension install cduruk/gh-workflow-status
 ```
 
 ## Usage
